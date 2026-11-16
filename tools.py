@@ -38,8 +38,8 @@ TOOL_SCHEMAS = [
     {
         "name": "pin_song",
         "description": (
-            "Pin the song the user is asking about so it shows in the sidebar 'Song of the Session' card and "
-            "follow-up questions stay on it. Call it when the user's question centers on ONE specific song "
+            "Pin the song the user is asking about. This names the chat in the sidebar history and "
+            "keeps follow-up questions on that song. Call it when the user's question centers on ONE specific song "
             "(not for comparisons or general questions). Use the song's real title and artist."
         ),
         "input_schema": {
