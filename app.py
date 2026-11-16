@@ -5,7 +5,6 @@ persistent bot greeting, starter chips below the chat (only while the chat is em
 chat input, and a sidebar with the Song of the Session card, Level radio, and New Chat button.
 """
 import os
-import traceback
 import uuid
 
 import streamlit as st
@@ -175,10 +174,8 @@ if prompt:
                         on_tool=lambda n, a: status.update(label=f"Using {n.replace('_', ' ')}..."),
                     )
                     status.update(label="Done", state="complete")
-                except Exception as e:  # noqa: BLE001
-                    traceback.print_exc()  # full traceback goes to the terminal / Streamlit Cloud logs
-                    text = ("Something went wrong on my end. Please try again in a moment.\n\n"
-                            f"`{type(e).__name__}: {str(e)[:300]}`")
+                except Exception:  # noqa: BLE001
+                    text = "Something went wrong on my end. Please try again in a moment."
                     status.update(label="Error", state="error")
             st.markdown(text)
         obs.flush()
