@@ -1,0 +1,6 @@
+streamlit>=1.40
+anthropic>=0.40
+scikit-learn>=1.4
+requests>=2.31
+langfuse>=3.0
+pytest>=8.0
