@@ -42,7 +42,8 @@ INJECTION_PATTERNS: list[tuple[str, re.Pattern]] = [
 _ZERO_WIDTH = re.compile(r"[\u200b-\u200f\u202a-\u202e\u2060\ufeff]")
 _URL = re.compile(r"https?://[^\s)>\]]+", re.I)
 _PIRACY = re.compile(r"(torrent|magnet:|mp3skull|free[-_ ]?download|\.mp3\b|\bcrack(ed)?\b|\bzippyshare\b)", re.I)
-_QUOTED = re.compile(r"[\"\u201c]([^\"\u201d]{20,})[\"\u201d]")
+_CURLY_QUOTED = re.compile(r"\u201c([^\u201d\n]+)\u201d")
+_REDACTED = "[long quotation removed - paraphrase only]"
 
 
 def normalize(text: str) -> str:
@@ -97,13 +98,30 @@ def guard_output(text: str, canary: str, system_prompt: str) -> tuple[str, list[
         return ("I can't share my internal instructions, but I'd love to explain a song for you. "
                 "Which one are you curious about?"), flags
 
-    def _redact(m: re.Match) -> str:
-        if len(m.group(1).split()) > MAX_QUOTE_WORDS:
+    def _is_long(segment: str) -> bool:
+        return len(segment.split()) > MAX_QUOTE_WORDS and "\n" not in segment
+
+    def _redact_curly(m: re.Match) -> str:
+        if _is_long(m.group(1)):
             flags.append("long_quote_redacted")
-            return "[long quotation removed - paraphrase only]"
+            return _REDACTED
         return m.group(0)
 
-    text = _QUOTED.sub(_redact, text)
+    text = _CURLY_QUOTED.sub(_redact_curly, text)
+
+    # Straight quotes: only pair them when the count is even (otherwise we can't tell which quote
+    # opens and which closes, and we would risk deleting normal text between two separate quotes).
+    pieces = text.split('"')
+    if len(pieces) % 2 == 1 and len(pieces) > 1:
+        out = [pieces[0]]
+        for i in range(1, len(pieces), 2):
+            inner, after = pieces[i], pieces[i + 1]
+            if _is_long(inner):
+                flags.append("long_quote_redacted")
+                out.append(_REDACTED + after)
+            else:
+                out.append('"' + inner + '"' + after)
+        text = "".join(out)
 
     def _strip_url(m: re.Match) -> str:
         if _PIRACY.search(m.group(0)):
