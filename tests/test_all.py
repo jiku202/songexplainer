@@ -103,48 +103,80 @@ def test_retrieval_miss(kb):
     assert "No relevant notes" in kb.format_results("quantum chromodynamics lattice")
 
 
-# ---------- agent loop with a fake model ----------
+# ---------- agent loop with a fake Gemini client ----------
+from google.genai import types
+
+
 class FakeClient:
     def __init__(self, script):
         self.script, self.calls = list(script), []
-        self.messages = self
+        self.models = self
 
-    def create(self, **kw):
-        self.calls.append(kw)
-        return self.script.pop(0)
+    def generate_content(self, model, contents, config):
+        self.calls.append(NS(model=model, contents=list(contents), config=config))
+        item = self.script.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
 
 
-def tool_use(name, query, id="t1"):
-    return NS(stop_reason="tool_use", usage=None,
-              content=[NS(type="tool_use", id=id, name=name, input={"query": query})])
+def tool_call(name, query, id="t1"):
+    fc = NS(name=name, args={"query": query}, id=id)
+    content = types.Content(role="model", parts=[types.Part(text="calling tool")])
+    return NS(function_calls=[fc], text=None, candidates=[NS(content=content)], usage_metadata=None)
 
 
 def final(text):
-    return NS(stop_reason="end_turn", usage=None, content=[NS(type="text", text=text)])
+    content = types.Content(role="model", parts=[types.Part(text=text)])
+    return NS(function_calls=None, text=text, candidates=[NS(content=content)], usage_metadata=None)
 
 
 def test_agent_uses_tool_then_answers(kb):
-    client = FakeClient([tool_use("search_knowledge_base", "Fix You Coldplay"), final("**Theme** comfort")])
+    client = FakeClient([tool_call("search_knowledge_base", "Fix You Coldplay"), final("**Theme** comfort")])
     res = run_agent(client, "m", "sys", [{"role": "user", "content": "hi"}], ToolRunner(kb))
     assert res.text == "**Theme** comfort"
     assert res.trace[0]["tool"] == "search_knowledge_base"
-    # tool result was fed back and wrapped as data
-    sent = client.calls[1]["messages"][-1]["content"][0]
-    assert sent["type"] == "tool_result" and "<tool_result>" in sent["content"] and "Coldplay" in sent["content"]
+    # tool result was fed back to the model as a function response, wrapped as data
+    sent = client.calls[1].contents[-1]
+    resp = sent.parts[0].function_response
+    assert resp.name == "search_knowledge_base"
+    assert "<tool_result>" in resp.response["result"] and "Coldplay" in resp.response["result"]
+
+
+def test_history_roles_converted():
+    from agent import to_contents
+    c = to_contents([{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"}])
+    assert [x.role for x in c] == ["user", "model"]
 
 
 def test_agent_step_cap_forces_final(kb):
-    script = [tool_use("search_knowledge_base", "x", f"t{i}") for i in range(4)] + [final("done")]
+    script = [tool_call("search_knowledge_base", "x", f"t{i}") for i in range(4)] + [final("done")]
     client = FakeClient(script)
     res = run_agent(client, "m", "sys", [{"role": "user", "content": "hi"}], ToolRunner(kb), max_steps=4)
     assert res.text == "done"
-    assert client.calls[-1]["tool_choice"] == {"type": "none"}
+    mode = client.calls[-1].config.tool_config.function_calling_config.mode
+    assert str(mode).endswith("NONE")
 
 
 def test_answer_turn_blocks_leak(kb):
     client = FakeClient([final("sure: CANARY-zzz")])
     text, flags, _ = answer_turn(client, "m", "sys", [{"role": "user", "content": "hi"}], ToolRunner(kb), "CANARY-zzz")
     assert "canary_leak" in flags and "CANARY-zzz" not in text
+
+
+def test_retry_on_429_then_success(kb, monkeypatch):
+    import agent
+    monkeypatch.setattr(agent.time, "sleep", lambda s: None)
+    err = Exception("rate limited"); err.code = 429
+    client = FakeClient([err, final("ok")])
+    res = run_agent(client, "m", "sys", [{"role": "user", "content": "hi"}], ToolRunner(kb))
+    assert res.text == "ok" and len(client.calls) == 2
+
+
+def test_empty_response_fallback(kb):
+    client = FakeClient([final("")])
+    res = run_agent(client, "m", "sys", [{"role": "user", "content": "hi"}], ToolRunner(kb))
+    assert "rephrase" in res.text
 
 
 def test_wikipedia_failure_is_graceful(monkeypatch, kb):

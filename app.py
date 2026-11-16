@@ -5,6 +5,7 @@ persistent bot greeting, starter chips below the chat (only while the chat is em
 chat input, and a sidebar with the Song of the Session card, Level radio, and New Chat button.
 """
 import os
+import traceback
 import uuid
 
 import streamlit as st
@@ -48,8 +49,8 @@ for _k in ("LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_HOST"):
     if secret(_k):
         os.environ[_k] = secret(_k)
 
-MODEL = secret("MODEL", "claude-sonnet-5-5")
-API_KEY = secret("ANTHROPIC_API_KEY")
+MODEL = secret("MODEL", "gemini-3.5-flash")
+API_KEY = secret("GEMINI_API_KEY")
 
 
 @st.cache_resource
@@ -59,8 +60,8 @@ def get_kb() -> SongKnowledgeBase:
 
 @st.cache_resource
 def get_client(key: str):
-    import anthropic
-    return anthropic.Anthropic(api_key=key)
+    from google import genai
+    return genai.Client(api_key=key)
 
 
 # ---------- session state ----------
@@ -101,7 +102,7 @@ st.caption("Every song has more than one story.")
 st.divider()
 
 if not API_KEY:
-    st.error("No ANTHROPIC_API_KEY found. Add it to .streamlit/secrets.toml (or the Streamlit Cloud Secrets box).")
+    st.error("No GEMINI_API_KEY found. Add it to .streamlit/secrets.toml (or the Streamlit Cloud Secrets box). Get a free key at aistudio.google.com/apikey.")
     st.stop()
 
 # ---------- chat window ----------
@@ -174,8 +175,14 @@ if prompt:
                         on_tool=lambda n, a: status.update(label=f"Using {n.replace('_', ' ')}..."),
                     )
                     status.update(label="Done", state="complete")
-                except Exception:  # noqa: BLE001
-                    text = "Something went wrong on my end. Please try again in a moment."
+                except Exception as e:  # noqa: BLE001
+                    traceback.print_exc()  # full traceback goes to the terminal / Streamlit Cloud logs
+                    detail = f"{type(e).__name__}: {str(e)[:300]}"
+                    if "429" in detail or "RESOURCE_EXHAUSTED" in detail:
+                        text = ("I've hit the free usage limit for the moment. Please wait a minute and try again.\n\n"
+                                f"`{detail}`")
+                    else:
+                        text = f"Something went wrong on my end. Please try again in a moment.\n\n`{detail}`"
                     status.update(label="Error", state="error")
             st.markdown(text)
         obs.flush()

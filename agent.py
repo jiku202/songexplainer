@@ -1,14 +1,24 @@
-"""Agent loop: the model may call tools (RAG search, Wikipedia) several times before answering."""
+"""Agent loop (Gemini): the model may call tools (RAG search, Wikipedia, pin_song) several times
+before answering. Uses the google-genai SDK with manual function calling."""
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
+
+from google.genai import types
 
 import observability as obs
 import security
 from tools import TOOL_SCHEMAS, ToolRunner
 
 MAX_TOOL_STEPS = 4
-MAX_TOKENS = 900
+MAX_OUTPUT_TOKENS = 2048  # Gemini 3.x thinking tokens count toward this limit
+RETRY_CODES = (429, 500, 503)
+
+# Gemini function declarations built from the shared tool schemas.
+_TOOL = types.Tool(function_declarations=[
+    {"name": t["name"], "description": t["description"], "parameters": t["input_schema"]} for t in TOOL_SCHEMAS
+])
 
 
 @dataclass
@@ -17,16 +27,39 @@ class AgentResult:
     trace: list[dict] = field(default_factory=list)
 
 
-@obs.observe(as_type="generation", name="claude-call")
-def call_model(client, model: str, system: str, messages: list, force_no_tools: bool = False):
-    kwargs = {"tool_choice": {"type": "none"}} if force_no_tools else {}
-    resp = client.messages.create(
-        model=model, max_tokens=MAX_TOKENS, system=system, messages=messages, tools=TOOL_SCHEMAS, **kwargs
+def to_contents(messages: list[dict]) -> list[types.Content]:
+    """Convert [{"role": "user"|"assistant", "content": str}] to Gemini contents."""
+    return [
+        types.Content(role="model" if m["role"] == "assistant" else "user", parts=[types.Part(text=m["content"])])
+        for m in messages
+    ]
+
+
+@obs.observe(as_type="generation", name="gemini-call")
+def call_model(client, model: str, system: str, contents: list, force_no_tools: bool = False):
+    config = types.GenerateContentConfig(
+        system_instruction=system,
+        tools=[_TOOL],
+        max_output_tokens=MAX_OUTPUT_TOKENS,
+        automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+        tool_config=types.ToolConfig(
+            function_calling_config=types.FunctionCallingConfig(mode="NONE" if force_no_tools else "AUTO")
+        ),
     )
-    usage = getattr(resp, "usage", None)
+    for attempt in range(3):
+        try:
+            resp = client.models.generate_content(model=model, contents=contents, config=config)
+            break
+        except Exception as e:  # noqa: BLE001
+            if getattr(e, "code", None) in RETRY_CODES and attempt < 2:
+                time.sleep(2 * (attempt + 1))
+                continue
+            raise
+    usage = getattr(resp, "usage_metadata", None)
     obs.record_generation(
         model=model,
-        usage_details={"input": getattr(usage, "input_tokens", 0), "output": getattr(usage, "output_tokens", 0)},
+        usage_details={"input": getattr(usage, "prompt_token_count", 0) or 0,
+                       "output": getattr(usage, "candidates_token_count", 0) or 0},
     )
     return resp
 
@@ -34,25 +67,26 @@ def call_model(client, model: str, system: str, messages: list, force_no_tools: 
 @obs.observe(name="songexplainer-agent")
 def run_agent(client, model: str, system: str, messages: list[dict], runner: ToolRunner,
               max_steps: int = MAX_TOOL_STEPS, on_tool=None) -> AgentResult:
-    convo = list(messages)
+    contents = to_contents(messages)
     trace: list[dict] = []
     for step in range(max_steps + 1):
         last = step == max_steps
-        resp = call_model(client, model, system, convo, force_no_tools=last)
-        if resp.stop_reason != "tool_use":
-            text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text").strip()
+        resp = call_model(client, model, system, contents, force_no_tools=last)
+        calls = [] if last else (resp.function_calls or [])
+        if not calls:
+            text = (resp.text or "").strip()
             return AgentResult(text or "Sorry, I couldn't put an answer together. Could you rephrase?", trace)
-        convo.append({"role": "assistant", "content": resp.content})
-        results = []
-        for block in resp.content:
-            if getattr(block, "type", "") != "tool_use":
-                continue
+        # Keep the model's turn exactly as returned (preserves Gemini 3 thought signatures).
+        contents.append(resp.candidates[0].content)
+        parts = []
+        for fc in calls:
+            args = dict(fc.args or {})
             if on_tool:
-                on_tool(block.name, block.input)
-            output = runner.run(block.name, block.input)
-            trace.append({"tool": block.name, "input": block.input, "output_preview": output[:300]})
-            results.append({"type": "tool_result", "tool_use_id": block.id, "content": output})
-        convo.append({"role": "user", "content": results})
+                on_tool(fc.name, args)
+            output = runner.run(fc.name, args)
+            trace.append({"tool": fc.name, "input": args, "output_preview": output[:300]})
+            parts.append(types.Part.from_function_response(name=fc.name, response={"result": output}))
+        contents.append(types.Content(role="user", parts=parts))
     return AgentResult("Sorry, I couldn't finish that lookup. Could you try again?", trace)
 
 

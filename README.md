@@ -7,7 +7,7 @@ multiple valid interpretations in plain language.
 
 | Requirement | Implementation |
 |---|---|
-| **Agentic AI** | `agent.py` - tool-use loop (max 4 tool steps). Claude decides when to call `search_knowledge_base`, `wikipedia_lookup`, or `pin_song` (fills the sidebar card), reads results, and answers. |
+| **Agentic AI** | `agent.py` - tool-use loop (max 4 tool steps). Gemini decides when to call `search_knowledge_base`, `wikipedia_lookup`, or `pin_song` (fills the sidebar card), reads results, and answers. |
 | **RAG** | `rag.py` + `knowledge_base/*.md` - document loader, paragraph chunking, TF-IDF vector index, cosine-similarity retrieval. Exposed to the agent as a tool (agentic RAG). |
 | **Prompt defenses** | `security.py` - input screening, `<user_input>` delimiting + sandwich reminder, tool-output scrubbing (indirect injection), canary token + output guard, copyright quote limit, piracy-link stripping, rate limiting. |
 | **Langfuse (optional)** | `observability.py` - traces, generations, and prompt versions. `scripts/push_prompt.py` pushes the prompt as a new version; the app fetches the `production` label at runtime and falls back to `prompts.py`. |
@@ -16,9 +16,9 @@ multiple valid interpretations in plain language.
 
 ```bash
 pip install -r requirements.txt
-cp .streamlit/secrets.toml.example .streamlit/secrets.toml   # add ANTHROPIC_API_KEY
+cp .streamlit/secrets.toml.example .streamlit/secrets.toml   # add GEMINI_API_KEY (free: aistudio.google.com/apikey)
 streamlit run app.py
-python -m pytest -q                                          # 32 tests, no API key needed
+python -m pytest -q                                          # 35 tests, no API key needed
 ```
 
 ## Deploy (Streamlit Community Cloud)
@@ -39,10 +39,12 @@ Add a markdown file to `knowledge_base/` with a `---` front-matter header (title
 Keep notes paraphrased - never paste lyrics. The sample notes were written as brief background
 summaries; verify facts you plan to present before your demo.
 
-## Changing the model provider
+## Model and cost
 
-All model calls live in `agent.py::call_model`. The model name is the `MODEL` secret
-(default `claude-sonnet-5-5`).
+The app uses Google's Gemini API through the `google-genai` SDK. The default model is `gemini-3.5-flash`
+(override with a `MODEL` secret). Gemini API keys from Google AI Studio work on a free tier with rate limits;
+check the limits shown in your AI Studio console. Free-tier requests may be used by Google to improve its products,
+so don't paste private information. All model calls live in `agent.py::call_model`.
 
 ## Wireframe mapping
 
