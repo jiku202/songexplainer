@@ -92,7 +92,7 @@ def cur() -> dict:
 
 
 def chat_label(c: dict) -> str:
-    return c["title"] or "New chat"
+    return c["title"] or "Empty chat"
 
 
 def start_new_chat() -> None:
@@ -126,13 +126,17 @@ with st.sidebar:
     for c in reversed(ss.chats):
         label_col, del_col = st.columns([5, 1], vertical_alignment="center")
         is_current = c["id"] == ss.current
-        if label_col.button(chat_label(c)[:34], key=f"open_{c['id']}", use_container_width=True,
-                            type="primary" if is_current else "secondary"):
+        if label_col.button(chat_label(c)[:34], key=f"open_{c['id']}", use_container_width=True):
             open_chat(c["id"])
             st.rerun()
         if del_col.button("", icon=":material/delete:", key=f"del_{c['id']}", help="Delete chat"):
             delete_chat(c["id"])
             st.rerun()
+    # The open chat is marked with a red border (Streamlit adds an st-key-<key> class to each keyed widget).
+    st.markdown(
+        f"<style>.st-key-open_{ss.current} button {{ border: 2px solid #ff4b4b !important; }}</style>",
+        unsafe_allow_html=True,
+    )
     st.divider()
     level = st.radio("Level:", list(prompts.LEVEL_NOTES), index=0)
 
