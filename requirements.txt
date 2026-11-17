@@ -1,5 +1,6 @@
 streamlit>=1.40
 google-genai>=1.0
+openai>=1.40
 scikit-learn>=1.4
 requests>=2.31
 langfuse>=3.0
