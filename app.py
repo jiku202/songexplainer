@@ -339,7 +339,7 @@ if prompt:
                 except Exception as e:  # noqa: BLE001
                     traceback.print_exc()  # full traceback goes to the terminal / Streamlit Cloud logs
                     failed = True
-                    detail = f"{type(e).__name__}: {str(e)[:600]}"
+                    detail = f"{type(e).__name__}: {str(e)[:1000]}"
                     if "429" in detail or "RESOURCE_EXHAUSTED" in detail:
                         text = ("I've hit the free usage limit for the moment. Please wait a minute and try again.\n\n"
                                 f"`{detail}`")
