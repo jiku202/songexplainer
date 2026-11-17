@@ -56,7 +56,7 @@ for _k in ("LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_HOST"):
 GEMINI_KEY = secret("GEMINI_API_KEY")
 GROQ_KEY = secret("GROQ_API_KEY")
 GEMINI_MODEL = secret("GEMINI_MODEL") or secret("MODEL", "gemini-3.5-flash")
-GROQ_MODEL = secret("GROQ_MODEL", "llama-3.3-70b-versatile")
+GROQ_MODEL = secret("GROQ_MODEL", "openai/gpt-oss-120b")
 PROVIDER = secret("PROVIDER", "gemini").lower()   # which provider answers first: "gemini" or "groq"
 LABELS = {"gemini": "Gemini", "groq": "Groq"}
 
