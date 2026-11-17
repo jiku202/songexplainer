@@ -18,8 +18,12 @@ from tools import TOOL_SCHEMAS, ToolRunner
 
 MAX_TOOL_STEPS = 4
 MAX_OUTPUT_TOKENS = 2048  # Gemini 3.x thinking tokens count toward this limit
-GROQ_MAX_TOKENS = 1500
+GROQ_MAX_TOKENS = 2000
 RETRY_CODES = (429, 500, 503)
+# Groq's catalog changes often. If the configured model is missing, pick the first of these that the
+# account can see (checked live via the models endpoint), then any other chat model.
+GROQ_PREFERRED = ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+_NON_CHAT = ("whisper", "tts", "guard", "orpheus", "embed", "compound", "distil-whisper", "safeguard")
 
 # Gemini function declarations built from the shared tool schemas.
 _GEMINI_TOOL = types.Tool(function_declarations=[
@@ -116,15 +120,22 @@ class GeminiBackend:
 def call_groq(client, model: str, messages: list, force_no_tools: bool = False):
     kwargs = dict(model=model, messages=messages, tools=_GROQ_TOOLS, max_tokens=GROQ_MAX_TOKENS,
                   tool_choice="none" if force_no_tools else "auto")
-    try:
-        resp = client.chat.completions.create(**kwargs)
-    except Exception as e:  # noqa: BLE001
-        if "tool_use_failed" in str(e) and not force_no_tools:
-            # Llama occasionally emits a malformed tool call; retry once without tools.
-            kwargs["tool_choice"] = "none"
+    if model.startswith("openai/gpt-oss"):
+        kwargs["reasoning_effort"] = "low"      # keep the hidden reasoning short so the answer fits the budget
+    for _ in range(3):
+        try:
             resp = client.chat.completions.create(**kwargs)
-        else:
-            raise
+            break
+        except Exception as e:  # noqa: BLE001
+            text = str(e)
+            if "reasoning_effort" in text and "reasoning_effort" in kwargs:
+                del kwargs["reasoning_effort"]       # this model doesn't accept it
+            elif "tool_use_failed" in text and kwargs["tool_choice"] != "none":
+                kwargs["tool_choice"] = "none"       # Llama sometimes emits a malformed tool call
+            else:
+                raise
+    else:
+        raise RuntimeError("Groq request kept failing after retries")
     usage = getattr(resp, "usage", None)
     obs.record_generation(
         model=model,
@@ -134,18 +145,48 @@ def call_groq(client, model: str, messages: list, force_no_tools: bool = False):
     return resp
 
 
+def is_model_not_found(e: Exception) -> bool:
+    text = str(e).lower()
+    return getattr(e, "status_code", None) == 404 or "model_not_found" in text or "does not exist" in text
+
+
 class GroqBackend:
     name = "groq"
 
-    def __init__(self, client, model: str):
-        self.client, self.model = client, model
+    def __init__(self, client, model: str | None = None):
+        self.client = client
+        self.model = model or GROQ_PREFERRED[0]   # the model currently in use (may change if it is not found)
+
+    def _pick_alternative(self, exclude: str) -> str | None:
+        """Ask Groq which models this account can use and choose the best remaining one."""
+        try:
+            ids = [m.id for m in self.client.models.list().data]
+        except Exception:  # noqa: BLE001
+            return None
+        for preferred in GROQ_PREFERRED:
+            if preferred in ids and preferred != exclude:
+                return preferred
+        others = [i for i in ids if i != exclude and not any(w in i.lower() for w in _NON_CHAT)]
+        return others[0] if others else None
+
+    def _call(self, convo: list, force_no_tools: bool):
+        try:
+            return call_groq(self.client, self.model, convo, force_no_tools)
+        except Exception as e:  # noqa: BLE001
+            if not is_model_not_found(e):
+                raise
+            alternative = self._pick_alternative(exclude=self.model)
+            if not alternative:
+                raise
+            self.model = alternative            # remember it so later calls skip the failed model
+            return call_groq(self.client, self.model, convo, force_no_tools)
 
     def run(self, system, messages, runner, max_steps=MAX_TOOL_STEPS, on_tool=None) -> AgentResult:
         convo = [{"role": "system", "content": system}] + [{"role": m["role"], "content": m["content"]} for m in messages]
         trace: list[dict] = []
         for step in range(max_steps + 1):
             last = step == max_steps
-            msg = call_groq(self.client, self.model, convo, force_no_tools=last).choices[0].message
+            msg = self._call(convo, last).choices[0].message
             calls = [] if last else (getattr(msg, "tool_calls", None) or [])
             if not calls:
                 text = (msg.content or "").strip()
