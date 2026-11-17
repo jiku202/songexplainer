@@ -7,7 +7,7 @@ multiple valid interpretations in plain language.
 
 | Requirement | Implementation |
 |---|---|
-| **Agentic AI** | `agent.py` - tool-use loop (max 4 tool steps). Gemini decides when to call `search_knowledge_base`, `wikipedia_lookup`, or `pin_song` (fills the sidebar card), reads results, and answers. |
+| **Agentic AI** | `agent.py` - tool-use loop (max 4 tool steps) on Gemini or Groq with automatic fallback. The model decides when to call `search_knowledge_base`, `wikipedia_lookup`, or `pin_song` (fills the sidebar card), reads results, and answers. |
 | **RAG** | `rag.py` + `knowledge_base/*.md` - document loader, paragraph chunking, TF-IDF vector index, cosine-similarity retrieval. Exposed to the agent as a tool (agentic RAG). |
 | **Prompt defenses** | `security.py` - input screening, `<user_input>` delimiting + sandwich reminder, tool-output scrubbing (indirect injection), canary token + output guard, copyright quote limit, piracy-link stripping, rate limiting. |
 | **Langfuse (optional)** | `observability.py` - traces, generations, and prompt versions. `scripts/push_prompt.py` pushes the prompt as a new version; the app fetches the `production` label at runtime and falls back to `prompts.py`. |
@@ -18,7 +18,7 @@ multiple valid interpretations in plain language.
 pip install -r requirements.txt
 cp .streamlit/secrets.toml.example .streamlit/secrets.toml   # add GEMINI_API_KEY (free: aistudio.google.com/apikey)
 streamlit run app.py
-python -m pytest -q                                          # 35 tests, no API key needed
+python -m pytest -q                                          # 64 tests, no API key needed
 ```
 
 ## Deploy (Streamlit Community Cloud)
@@ -39,12 +39,21 @@ Add a markdown file to `knowledge_base/` with a `---` front-matter header (title
 Keep notes paraphrased - never paste lyrics. The sample notes were written as brief background
 summaries; verify facts you plan to present before your demo.
 
-## Model and cost
+## Models, cost, and fallback
 
-The app uses Google's Gemini API through the `google-genai` SDK. The default model is `gemini-3.5-flash`
-(override with a `MODEL` secret). Gemini API keys from Google AI Studio work on a free tier with rate limits;
-check the limits shown in your AI Studio console. Free-tier requests may be used by Google to improve its products,
-so don't paste private information. All model calls live in `agent.py::call_model`.
+Two free providers are supported through `agent.py`:
+
+- **Gemini** (`google-genai`, default `gemini-3.5-flash`) - key from aistudio.google.com/apikey
+- **Groq** (OpenAI-compatible API, default `openai/gpt-oss-120b`; if the model is missing it asks Groq which models the account can use and switches automatically) - key from console.groq.com
+
+Add one or both keys as secrets. With both, the primary provider (`PROVIDER`, default `gemini`) answers first
+and the app automatically retries the turn on the other provider if the first one errors (rate limit, quota,
+outage, wrong model name). A small note under the reply tells you when the fallback answered.
+If Groq's tool calling fails twice (malformed or unparseable tool call), the Groq backend switches to a
+no-tools mode: it runs the knowledge-base search and Wikipedia lookup itself and answers from those notes.
+Secrets: `GEMINI_API_KEY`, `GROQ_API_KEY`, `PROVIDER`, `GEMINI_MODEL`, `GROQ_MODEL`.
+Free-tier limits change without notice; check each provider's console. Free-tier requests may be used by
+the provider to improve its products, so don't paste private information.
 
 ## Wireframe mapping
 
@@ -52,8 +61,8 @@ so don't paste private information. All model calls live in `agent.py::call_mode
 |---|---|
 | Title + tagline + divider | `st.title`, `st.caption`, `st.divider` |
 | Chat window, bot greeting first | `st.chat_message` bubbles; greeting is always the first bubble; user bubbles right-aligned via small CSS |
-| Starter chips (Explain a song / Compare two songs / Explain like I'm 12) | three `st.button`s below the chat, shown only while the chat is empty |
+| Starter chips | two `st.button` chips (Explain a song, Compare two songs) shown while the chat is empty; each opens a small `st.form` (song title + artist, or two songs). **Explain like I'm 12** is not a chip: it appears under the latest explanation and rewrites it in simpler words |
 | Input bar "Ask about any song..." | `st.chat_input` |
-| Sidebar: Song of the Session card + [Clear pin] | bordered container showing title/artist; `pin_song` tool fills it; Clear pin button |
+| Sidebar: Song of the Session | extended into a chat history: each chat is named after its song (the `pin_song` tool sets the name, otherwise the first message), New Chat saves the current chat, click a chat to reopen it, trash icon deletes it. Lives in `st.session_state` (kept while the tab stays open, lost on page refresh) |
 | Sidebar: Level (Casual / Advanced) | `st.radio` |
-| Sidebar: [New Chat] | button at the bottom of the sidebar; resets chat, pin, and canary |
+| Sidebar: [New Chat] | button at the top of the sidebar (standard chat-app placement); starts a fresh chat without deleting the old one |
