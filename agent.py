@@ -122,16 +122,23 @@ def call_groq(client, model: str, messages: list, force_no_tools: bool = False):
                   tool_choice="none" if force_no_tools else "auto")
     if model.startswith("openai/gpt-oss"):
         kwargs["reasoning_effort"] = "low"      # keep the hidden reasoning short so the answer fits the budget
-    for _ in range(3):
+    tool_failures = 0
+    for _ in range(4):
         try:
             resp = client.chat.completions.create(**kwargs)
             break
         except Exception as e:  # noqa: BLE001
             text = str(e)
+            bad_tool_call = ("tool_use_failed" in text or "tool call validation failed" in text
+                             or "not in request.tools" in text)
             if "reasoning_effort" in text and "reasoning_effort" in kwargs:
                 del kwargs["reasoning_effort"]       # this model doesn't accept it
-            elif "tool_use_failed" in text and kwargs["tool_choice"] != "none":
-                kwargs["tool_choice"] = "none"       # Llama sometimes emits a malformed tool call
+            elif bad_tool_call and kwargs["tool_choice"] != "none":
+                # The model produced a malformed call or invented a tool name (e.g. "wiki_lookup").
+                # Groq rejects the whole request, so retry once as-is, then answer without tools.
+                tool_failures += 1
+                if tool_failures >= 2:
+                    kwargs["tool_choice"] = "none"
             else:
                 raise
     else:
