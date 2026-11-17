@@ -7,6 +7,7 @@ pinned), and clicking a chat reopens it. History lives in st.session_state, so i
 the browser tab stays open.
 """
 import os
+import re
 import traceback
 import uuid
 
@@ -22,11 +23,12 @@ from tools import ToolRunner
 st.set_page_config(page_title="SongExplainer", page_icon="🎵")
 
 GREETING = "Hi! Name a song and I'll explain what it might mean, where it comes from, and a few ways to hear it."
-STARTERS = {
-    "Explain a song": "Explain the song 'Fix You' by Coldplay.",
-    "Compare two songs": "Compare 'Imagine' by John Lennon and 'Heal the World' by Michael Jackson.",
-    "Explain like I'm 12": "Explain 'Born to Run' by Bruce Springsteen like I'm 12.",
-}
+STARTERS = ["Explain a song", "Compare two songs"]       # starter chips: each opens a small input form
+ELI12_LABEL = "Explain like I'm 12"                      # shown under an explanation, never as a starter chip
+ELI12_INSTRUCTION = ("Explain your last explanation like I'm 12: use simple words, short sentences, and one "
+                     "everyday analogy, and keep the same section headers.")
+_SIMPLE_REQUEST = re.compile(r"like i'?m (12|twelve|5|five)|\beli5\b", re.I)
+_EXPLANATION = re.compile(r"\*\*Theme:?\*\*.*\*\*What It Means:?\*\*", re.S)
 
 # Wireframe: user bubbles sit on the right, bot bubbles on the left.
 st.markdown(
@@ -80,6 +82,7 @@ ss.setdefault("current", ss.chats[0]["id"])
 ss.setdefault("canary", security.new_canary())
 ss.setdefault("limiter", security.RateLimiter())
 ss.setdefault("pending", None)
+ss.setdefault("form_mode", None)   # None | "explain" | "compare": which starter form is open
 ss.setdefault("sid", uuid.uuid4().hex)
 
 
@@ -100,11 +103,11 @@ def start_new_chat() -> None:
         return
     ss.chats.append(new_chat_dict())
     ss.chats[:] = ss.chats[-MAX_CHATS:]
-    ss.current, ss.pending, ss.canary = ss.chats[-1]["id"], None, security.new_canary()
+    ss.current, ss.pending, ss.form_mode, ss.canary = ss.chats[-1]["id"], None, None, security.new_canary()
 
 
 def open_chat(chat_id: str) -> None:
-    ss.current, ss.pending = chat_id, None
+    ss.current, ss.pending, ss.form_mode = chat_id, None, None
     ss.canary = security.new_canary()
 
 
@@ -114,7 +117,7 @@ def delete_chat(chat_id: str) -> None:
         ss.chats.append(new_chat_dict())
     if ss.current == chat_id:
         ss.current = ss.chats[-1]["id"]
-        ss.pending = None
+        ss.pending, ss.form_mode = None, None
 
 
 # ---------- sidebar: chat history + level ----------
@@ -153,19 +156,92 @@ if not API_KEY:
 chat = cur()
 
 # ---------- chat window ----------
+def is_explanation(text: str) -> bool:
+    return bool(_EXPLANATION.search(text))
+
+
 with st.chat_message("assistant"):
     st.markdown(GREETING)
-for m in chat["messages"]:
+last_index = len(chat["messages"]) - 1
+for i, m in enumerate(chat["messages"]):
     with st.chat_message(m["role"]):
         st.markdown(m["content"])
+        # "Explain like I'm 12" appears right under the latest explanation (and not under an already-simplified one).
+        if (i == last_index and m["role"] == "assistant" and m.get("explanation") and not m.get("simplified")
+                and not m.get("display_only")):
+            if st.button(ELI12_LABEL, key=f"eli12_{chat['id']}_{i}"):
+                ss.pending = ELI12_LABEL
+                st.rerun()
 
-# ---------- starter chips (only while this chat is empty) ----------
+
+# ---------- starter chips + input forms (only while this chat is empty) ----------
+def clean_field(value: str):
+    """Return a sanitized field, "" if blank, or None if it looks like an injection attempt / is too long."""
+    value = (value or "").strip()
+    if not value:
+        return ""
+    ok, _, clean = security.check_input(value, max_chars=100)
+    return clean.replace('"', "").replace("<", "").replace(">", "") if ok else None
+
+
+def song_ref(title: str, artist: str) -> str:
+    return f'"{title}" by {artist}' if artist else f'"{title}"'
+
+
+def submit_form(prompt_text: str) -> None:
+    ss.pending, ss.form_mode = prompt_text, None
+    st.rerun()
+
+
 if not chat["messages"]:
-    cols = st.columns(len(STARTERS))
-    for col, (label, text) in zip(cols, STARTERS.items()):
-        if col.button(label, use_container_width=True, key=f"chip_{label}"):
-            ss.pending = text
+    if ss.form_mode == "explain":
+        with st.form("explain_form"):
+            st.markdown("**Explain a song**")
+            title = st.text_input("Song title", max_chars=100, key="ex_title")
+            artist = st.text_input("Artist", max_chars=100, key="ex_artist")
+            go, cancel = st.columns(2)
+            do_go = go.form_submit_button("Explain", use_container_width=True, key="ex_go")
+            do_cancel = cancel.form_submit_button("Cancel", use_container_width=True, key="ex_cancel")
+        if do_cancel:
+            ss.form_mode = None
             st.rerun()
+        if do_go:
+            t, a = clean_field(title), clean_field(artist)
+            if t is None or a is None:
+                st.warning("Please enter just a song title and an artist name.")
+            elif not t:
+                st.warning("Please enter a song title.")
+            else:
+                submit_form(f"Explain the song {song_ref(t, a)}.")
+    elif ss.form_mode == "compare":
+        with st.form("compare_form"):
+            st.markdown("**Compare two songs**")
+            c1, c2 = st.columns(2)
+            t1 = c1.text_input("Song 1 title", max_chars=100, key="cp_t1")
+            a1 = c1.text_input("Song 1 artist", max_chars=100, key="cp_a1")
+            t2 = c2.text_input("Song 2 title", max_chars=100, key="cp_t2")
+            a2 = c2.text_input("Song 2 artist", max_chars=100, key="cp_a2")
+            go, cancel = st.columns(2)
+            do_go = go.form_submit_button("Compare", use_container_width=True, key="cp_go")
+            do_cancel = cancel.form_submit_button("Cancel", use_container_width=True, key="cp_cancel")
+        if do_cancel:
+            ss.form_mode = None
+            st.rerun()
+        if do_go:
+            fields = [clean_field(x) for x in (t1, a1, t2, a2)]
+            if None in fields:
+                st.warning("Please enter just song titles and artist names.")
+            elif not fields[0] or not fields[2]:
+                st.warning("Please enter both song titles.")
+            else:
+                submit_form(f"Compare {song_ref(fields[0], fields[1])} and {song_ref(fields[2], fields[3])}.")
+    else:
+        cols = st.columns(len(STARTERS))
+        modes = {"Explain a song": "explain", "Compare two songs": "compare"}
+        for col, label in zip(cols, STARTERS):
+            if col.button(label, use_container_width=True, key=f"chip_{label}"):
+                ss.form_mode = modes[label]
+                st.rerun()
 
 # ---------- input bar ----------
 typed = st.chat_input("Ask about any song...")
@@ -198,11 +274,14 @@ def build_system() -> tuple[str, str]:
 def model_history() -> list[dict]:
     turns = [m for m in chat["messages"] if not m.get("display_only")][-10:]
     return [{"role": m["role"],
-             "content": security.wrap_user_input(m["content"]) if m["role"] == "user" else m["content"]}
+             "content": (security.wrap_user_input(m.get("model_content", m["content"]))
+                         if m["role"] == "user" else m["content"])}
             for m in turns]
 
 
 if prompt:
+    ss.form_mode = None
+    is_eli12 = prompt == ELI12_LABEL
     with st.chat_message("user"):
         st.markdown(prompt)
 
@@ -218,7 +297,8 @@ if prompt:
         with st.chat_message("assistant"):
             st.warning("You're sending messages quickly. Give me a few seconds and try again.")
     else:
-        chat["messages"].append({"role": "user", "content": clean})
+        chat["messages"].append({"role": "user", "content": clean,
+                                 **({"model_content": ELI12_INSTRUCTION} if is_eli12 else {})})
         chat["title"] = chat["title"] or snippet(clean)
         system, prompt_source = build_system()
         failed = False
@@ -247,5 +327,10 @@ if prompt:
         obs.flush()
         if failed:  # keep errors out of the model's history (the user's message too, so roles stay alternating)
             chat["messages"][-1]["display_only"] = True
-        chat["messages"].append({"role": "assistant", "content": text, **({"display_only": True} if failed else {})})
+        chat["messages"].append({
+            "role": "assistant", "content": text,
+            **({"display_only": True} if failed else {}),
+            **({"explanation": True} if not failed and is_explanation(text) else {}),
+            **({"simplified": True} if is_eli12 or _SIMPLE_REQUEST.search(clean) else {}),
+        })
         st.rerun()
