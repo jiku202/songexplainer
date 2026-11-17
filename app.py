@@ -53,8 +53,12 @@ for _k in ("LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_HOST"):
     if secret(_k):
         os.environ[_k] = secret(_k)
 
-MODEL = secret("MODEL", "gemini-3.5-flash")
-API_KEY = secret("GEMINI_API_KEY")
+GEMINI_KEY = secret("GEMINI_API_KEY")
+GROQ_KEY = secret("GROQ_API_KEY")
+GEMINI_MODEL = secret("GEMINI_MODEL") or secret("MODEL", "gemini-3.5-flash")
+GROQ_MODEL = secret("GROQ_MODEL", "llama-3.3-70b-versatile")
+PROVIDER = secret("PROVIDER", "gemini").lower()   # which provider answers first: "gemini" or "groq"
+LABELS = {"gemini": "Gemini", "groq": "Groq"}
 
 
 @st.cache_resource
@@ -63,9 +67,24 @@ def get_kb() -> SongKnowledgeBase:
 
 
 @st.cache_resource
-def get_client(key: str):
-    from google import genai
-    return genai.Client(api_key=key)
+def make_backends(gemini_key: str, groq_key: str, order: str, gemini_model: str, groq_model: str) -> list:
+    """Build the available backends, primary first. Any provider without a key is skipped."""
+    from agent import GeminiBackend, GroqBackend
+    available = {}
+    if groq_key:
+        from openai import OpenAI
+        available["groq"] = GroqBackend(
+            OpenAI(api_key=groq_key, base_url="https://api.groq.com/openai/v1", timeout=40), groq_model)
+    if gemini_key:
+        from google import genai
+        # With a fallback available, don't waste time retrying Gemini's rate limit: switch right away.
+        available["gemini"] = GeminiBackend(genai.Client(api_key=gemini_key), gemini_model,
+                                            retries=0 if groq_key else 2)
+    first = order if order in available else next(iter(available), None)
+    return [available[first]] + [b for n, b in available.items() if n != first] if first else []
+
+
+BACKENDS = make_backends(GEMINI_KEY, GROQ_KEY, PROVIDER, GEMINI_MODEL, GROQ_MODEL)
 
 
 # ---------- session state: chat history ----------
@@ -148,9 +167,9 @@ st.title("SongExplainer")
 st.caption("Every song has more than one story.")
 st.divider()
 
-if not API_KEY:
-    st.error("No GEMINI_API_KEY found. Add it to .streamlit/secrets.toml (or the Streamlit Cloud Secrets box). "
-             "Get a free key at aistudio.google.com/apikey.")
+if not BACKENDS:
+    st.error("No API key found. Add GEMINI_API_KEY (free at aistudio.google.com/apikey) and/or GROQ_API_KEY "
+             "(free at console.groq.com) to .streamlit/secrets.toml or the Streamlit Cloud Secrets box.")
     st.stop()
 
 chat = cur()
@@ -166,6 +185,8 @@ last_index = len(chat["messages"]) - 1
 for i, m in enumerate(chat["messages"]):
     with st.chat_message(m["role"]):
         st.markdown(m["content"])
+        if m.get("note"):
+            st.caption(m["note"])
         # "Explain like I'm 12" appears right under the latest explanation (and not under an already-simplified one).
         if (i == last_index and m["role"] == "assistant" and m.get("explanation") and not m.get("simplified")
                 and not m.get("display_only")):
@@ -301,22 +322,24 @@ if prompt:
                                  **({"model_content": ELI12_INSTRUCTION} if is_eli12 else {})})
         chat["title"] = chat["title"] or snippet(clean)
         system, prompt_source = build_system()
-        failed = False
+        failed, note = False, ""
         with st.chat_message("assistant"):
             with st.status("Looking into it...", expanded=False) as status:
                 try:
-                    text, flags, trace = answer_turn(
-                        get_client(API_KEY), MODEL, system, model_history(),
+                    text, flags, trace, provider = answer_turn(
+                        BACKENDS, system, model_history(),
                         ToolRunner(get_kb(), on_pin=set_pin), ss.canary,
                         meta={"prompt_source": prompt_source, "level": level, "pinned": bool(chat["pinned"])},
                         session_id=f"{ss.sid}-{chat['id']}",
                         on_tool=lambda n, a: status.update(label=f"Using {n.replace('_', ' ')}..."),
                     )
                     status.update(label="Done", state="complete")
+                    if provider != BACKENDS[0].name:
+                        note = f"{LABELS[BACKENDS[0].name]} was unavailable, so {LABELS[provider]} answered this one."
                 except Exception as e:  # noqa: BLE001
                     traceback.print_exc()  # full traceback goes to the terminal / Streamlit Cloud logs
                     failed = True
-                    detail = f"{type(e).__name__}: {str(e)[:300]}"
+                    detail = f"{type(e).__name__}: {str(e)[:600]}"
                     if "429" in detail or "RESOURCE_EXHAUSTED" in detail:
                         text = ("I've hit the free usage limit for the moment. Please wait a minute and try again.\n\n"
                                 f"`{detail}`")
@@ -329,6 +352,7 @@ if prompt:
             chat["messages"][-1]["display_only"] = True
         chat["messages"].append({
             "role": "assistant", "content": text,
+            **({"note": note} if note else {}),
             **({"display_only": True} if failed else {}),
             **({"explanation": True} if not failed and is_explanation(text) else {}),
             **({"simplified": True} if is_eli12 or _SIMPLE_REQUEST.search(clean) else {}),
