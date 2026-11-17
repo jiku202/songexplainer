@@ -18,7 +18,7 @@ multiple valid interpretations in plain language.
 pip install -r requirements.txt
 cp .streamlit/secrets.toml.example .streamlit/secrets.toml   # add GEMINI_API_KEY (free: aistudio.google.com/apikey)
 streamlit run app.py
-python -m pytest -q                                          # 64 tests, no API key needed
+python -m pytest -q                                          # 67 tests, no API key needed
 ```
 
 ## Deploy (Streamlit Community Cloud)
@@ -50,10 +50,16 @@ Add one or both keys as secrets. With both, the primary provider (`PROVIDER`, de
 and the app automatically retries the turn on the other provider if the first one errors (rate limit, quota,
 outage, wrong model name). A small note under the reply tells you when the fallback answered.
 If Groq's tool calling fails twice (malformed or unparseable tool call), the Groq backend switches to a
-no-tools mode: it runs the knowledge-base search and Wikipedia lookup itself and answers from those notes.
+no-tools mode: it runs the knowledge-base search and Wikipedia lookup itself and answers from those notes. If a model's output still can't be parsed, it switches to a different
+Groq model family; error messages list which chat models your key can see.
 Secrets: `GEMINI_API_KEY`, `GROQ_API_KEY`, `PROVIDER`, `GEMINI_MODEL`, `GROQ_MODEL`.
 Free-tier limits change without notice; check each provider's console. Free-tier requests may be used by
 the provider to improve its products, so don't paste private information.
+
+## Troubleshooting providers
+
+`python scripts/check_providers.py` tests your Groq and Gemini keys directly and prints which models work
+(plain chat and tool calling), plus a recommended `GROQ_MODEL`.
 
 ## Wireframe mapping
 
