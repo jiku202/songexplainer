@@ -57,8 +57,10 @@ GEMINI_KEY = secret("GEMINI_API_KEY")
 GROQ_KEY = secret("GROQ_API_KEY")
 GEMINI_MODEL = secret("GEMINI_MODEL") or secret("MODEL", "gemini-3.5-flash")
 GROQ_MODEL = secret("GROQ_MODEL", "openai/gpt-oss-120b")
-PROVIDER = secret("PROVIDER", "gemini").lower()   # which provider answers first: "gemini" or "groq"
-LABELS = {"gemini": "Gemini", "groq": "Groq"}
+# Optional extra provider: any service with an OpenAI-compatible chat API (key + base URL + model name).
+AIK_KEY, AIK_URL, AIK_MODEL = secret("AIKLABS_API_KEY"), secret("AIKLABS_BASE_URL"), secret("AIKLABS_MODEL")
+PROVIDER = secret("PROVIDER", "gemini").lower()   # which provider answers first: "gemini", "groq" or "aiklabs"
+LABELS = {"gemini": "Gemini", "groq": "Groq", "aiklabs": "AIK Labs"}
 
 
 @st.cache_resource
@@ -67,10 +69,15 @@ def get_kb() -> SongKnowledgeBase:
 
 
 @st.cache_resource
-def make_backends(gemini_key: str, groq_key: str, order: str, gemini_model: str, groq_model: str) -> list:
+def make_backends(gemini_key: str, groq_key: str, order: str, gemini_model: str, groq_model: str,
+                  aik_key: str = "", aik_url: str = "", aik_model: str = "") -> list:
     """Build the available backends, primary first. Any provider without a key is skipped."""
-    from agent import GeminiBackend, GroqBackend
+    from agent import GeminiBackend, GroqBackend, OpenAICompatBackend
     available = {}
+    if aik_key and aik_url:
+        from openai import OpenAI
+        available["aiklabs"] = OpenAICompatBackend(
+            OpenAI(api_key=aik_key, base_url=aik_url.rstrip("/"), timeout=40), aik_model, name="aiklabs")
     if groq_key:
         from openai import OpenAI
         available["groq"] = GroqBackend(
@@ -79,12 +86,12 @@ def make_backends(gemini_key: str, groq_key: str, order: str, gemini_model: str,
         from google import genai
         # With a fallback available, don't waste time retrying Gemini's rate limit: switch right away.
         available["gemini"] = GeminiBackend(genai.Client(api_key=gemini_key), gemini_model,
-                                            retries=0 if groq_key else 2)
+                                            retries=0 if (groq_key or (aik_key and aik_url)) else 2)
     first = order if order in available else next(iter(available), None)
     return [available[first]] + [b for n, b in available.items() if n != first] if first else []
 
 
-BACKENDS = make_backends(GEMINI_KEY, GROQ_KEY, PROVIDER, GEMINI_MODEL, GROQ_MODEL)
+BACKENDS = make_backends(GEMINI_KEY, GROQ_KEY, PROVIDER, GEMINI_MODEL, GROQ_MODEL, AIK_KEY, AIK_URL, AIK_MODEL)
 
 
 # ---------- session state: chat history ----------
@@ -167,9 +174,13 @@ st.title("SongExplainer")
 st.caption("Every song has more than one story.")
 st.divider()
 
+if AIK_KEY and not AIK_URL:
+    st.warning("AIKLABS_API_KEY is set but AIKLABS_BASE_URL is missing, so AIK Labs is not being used. "
+               "Add the base URL from your provider's documentation (it usually ends in /v1).")
 if not BACKENDS:
-    st.error("No API key found. Add GEMINI_API_KEY (free at aistudio.google.com/apikey) and/or GROQ_API_KEY "
-             "(free at console.groq.com) to .streamlit/secrets.toml or the Streamlit Cloud Secrets box.")
+    st.error("No API key found. Add GEMINI_API_KEY (free at aistudio.google.com/apikey), GROQ_API_KEY "
+             "(free at console.groq.com), or AIKLABS_API_KEY with AIKLABS_BASE_URL to .streamlit/secrets.toml "
+             "or the Streamlit Cloud Secrets box.")
     st.stop()
 
 chat = cur()
