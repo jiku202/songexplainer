@@ -301,6 +301,23 @@ def plain_user_text(messages: list[dict], n: int = 2, limit: int = 250) -> str:
     return " ".join(users[-n:])[:limit]
 
 
+class OpenAICompatBackend(GroqBackend):
+    """Any service that speaks the OpenAI chat-completions API (base URL + key + model name).
+    Reuses the Groq loop: tool calling, retries on malformed tool calls, and no-tools context mode."""
+
+    def __init__(self, client, model: str | None = None, name: str = "custom"):
+        super().__init__(client, model)
+        self.model = model or ""      # don't inherit Groq's default model name
+        self.name = name
+
+    def run(self, system, messages, runner, max_steps=MAX_TOOL_STEPS, on_tool=None) -> AgentResult:
+        if not self.model:   # no model configured: use the first chat model the service lists
+            self.model = self._pick_alternative(set()) or ""
+            if not self.model:
+                raise ValueError(f"No model configured for {self.name} and none could be listed. Set its MODEL secret.")
+        return super().run(system, messages, runner, max_steps=max_steps, on_tool=on_tool)
+
+
 # ------------------------------------------------------------------ orchestration
 @obs.observe(name="songexplainer-agent")
 def run_agent(backends: list, system: str, messages: list[dict], runner: ToolRunner,
