@@ -17,6 +17,7 @@ import observability as obs
 import prompts
 import security
 from agent import answer_turn
+from formatting import is_explanation, with_line_breaks
 from rag import SongKnowledgeBase
 from tools import ToolRunner
 
@@ -28,7 +29,6 @@ ELI12_LABEL = "Explain like I'm 12"                      # shown under an explan
 ELI12_INSTRUCTION = ("Explain your last explanation like I'm 12: use simple words, short sentences, and one "
                      "everyday analogy, and keep the same section headers.")
 _SIMPLE_REQUEST = re.compile(r"like i'?m (12|twelve|5|five)|\beli5\b", re.I)
-_EXPLANATION = re.compile(r"\*\*Theme:?\*\*.*\*\*What It Means:?\*\*", re.S)
 
 # Wireframe: user bubbles sit on the right, bot bubbles on the left.
 st.markdown(
@@ -186,8 +186,9 @@ if not BACKENDS:
 chat = cur()
 
 # ---------- chat window ----------
-def is_explanation(text: str) -> bool:
-    return bool(_EXPLANATION.search(text))
+def show(text: str) -> None:
+    """Render a bot reply keeping its line breaks, so the label-then-text layout appears as written."""
+    st.markdown(with_line_breaks(text))
 
 
 with st.chat_message("assistant"):
@@ -195,7 +196,7 @@ with st.chat_message("assistant"):
 last_index = len(chat["messages"]) - 1
 for i, m in enumerate(chat["messages"]):
     with st.chat_message(m["role"]):
-        st.markdown(m["content"])
+        show(m["content"]) if m["role"] == "assistant" else st.markdown(m["content"])
         if m.get("note"):
             st.caption(m["note"])
         # "Explain like I'm 12" appears right under the latest explanation (and not under an already-simplified one).
@@ -357,7 +358,7 @@ if prompt:
                     else:
                         text = f"Something went wrong on my end. Please try again in a moment.\n\n`{detail}`"
                     status.update(label="Error", state="error")
-            st.markdown(text)
+            show(text)
         obs.flush()
         if failed:  # keep errors out of the model's history (the user's message too, so roles stay alternating)
             chat["messages"][-1]["display_only"] = True
