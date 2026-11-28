@@ -196,7 +196,10 @@ with st.chat_message("assistant"):
 last_index = len(chat["messages"]) - 1
 for i, m in enumerate(chat["messages"]):
     with st.chat_message(m["role"]):
-        show(m["content"]) if m["role"] == "assistant" else st.markdown(m["content"])
+        if m["role"] == "assistant":
+            show(m["content"])
+        else:
+            st.markdown(m["content"])
         if m.get("note"):
             st.caption(m["note"])
         # "Explain like I'm 12" appears right under the latest explanation (and not under an already-simplified one).
