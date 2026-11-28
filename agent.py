@@ -24,6 +24,7 @@ RETRY_CODES = (429, 500, 503)
 # Groq's catalog changes often. If the configured model is missing, pick the first of these that the
 # account can see (checked live via the models endpoint), then any other chat model.
 GROQ_PREFERRED = ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+_OPENAI_REASONING_MODEL = re.compile(r"^(openai/)?gpt-[5-9]", re.I)
 _NON_CHAT = ("whisper", "tts", "guard", "orpheus", "embed", "compound", "distil-whisper", "safeguard")
 
 # Gemini function declarations built from the shared tool schemas.
@@ -137,8 +138,13 @@ def call_groq(client, model: str, messages: list, force_no_tools: bool = False, 
         kwargs.update(tools=_GROQ_TOOLS, tool_choice="none" if force_no_tools else "auto")
     if model.startswith("openai/gpt-oss"):
         kwargs["reasoning_effort"] = "low"      # keep the hidden reasoning short so the answer fits the budget
+    elif _OPENAI_REASONING_MODEL.match(model):
+        # OpenAI's GPT-5/6 models only allow function calling on Chat Completions with reasoning turned off,
+        # and they take max_completion_tokens instead of max_tokens.
+        kwargs["reasoning_effort"] = "none"
+        kwargs["max_completion_tokens"] = kwargs.pop("max_tokens")
     tool_failures = 0
-    for _ in range(4):
+    for _ in range(5):
         try:
             resp = client.chat.completions.create(**kwargs)
             break
@@ -146,6 +152,10 @@ def call_groq(client, model: str, messages: list, force_no_tools: bool = False, 
             text = str(e)
             if "reasoning_effort" in text and "reasoning_effort" in kwargs:
                 del kwargs["reasoning_effort"]       # this model doesn't accept it
+            elif "max_completion_tokens" in text and "max_tokens" in kwargs:
+                kwargs["max_completion_tokens"] = kwargs.pop("max_tokens")   # this model wants the newer name
+            elif "max_tokens" in text and "max_completion_tokens" in kwargs and "max_tokens" not in kwargs:
+                kwargs["max_tokens"] = kwargs.pop("max_completion_tokens")   # this service only knows the older name
             elif is_tool_failure(text) and use_tools and kwargs.get("tool_choice") != "none":
                 # Malformed call, unparseable output, or an invented tool name (e.g. "wiki_lookup").
                 # Groq rejects the whole request: retry once as-is, then let the caller switch strategy.
