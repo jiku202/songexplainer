@@ -17,7 +17,7 @@ import observability as obs
 import prompts
 import security
 from agent import answer_turn
-from formatting import is_explanation, with_line_breaks
+from formatting import format_reply, is_explanation
 from rag import SongKnowledgeBase
 from tools import ToolRunner
 
@@ -187,8 +187,8 @@ chat = cur()
 
 # ---------- chat window ----------
 def show(text: str) -> None:
-    """Render a bot reply keeping its line breaks, so the label-then-text layout appears as written."""
-    st.markdown(with_line_breaks(text))
+    """Render a bot reply: each topic of an explanation is separated by a divider and keeps its line breaks."""
+    st.markdown(format_reply(text))
 
 
 with st.chat_message("assistant"):
